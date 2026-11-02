@@ -1,4 +1,4 @@
-name: Tests
+name: Cheddar Finance CI
 
 on:
   pull_request:
@@ -23,6 +23,10 @@ jobs:
       # --locked fails if uv.lock is out of date with pyproject.toml
       - name: Install dependencies
         run: uv sync --extra dev --locked
+
+      # Fails the build on any lint violation
+      - name: Lint with ruff
+        run: uv run ruff check .
 
       # Coverage thresholds (100% line + branch) come from pyproject.toml
       - name: Run tests with coverage
