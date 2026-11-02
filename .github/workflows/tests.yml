@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --locked fails if uv.lock is out of date with pyproject.toml
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      # Coverage thresholds (100% line + branch) come from pyproject.toml
+      - name: Run tests with coverage
+        run: uv run pytest --cov --cov-report=term-missing
