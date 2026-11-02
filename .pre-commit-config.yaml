@@ -6,3 +6,9 @@ repos:
         entry: uv run ruff check --fix --exit-non-zero-on-fix
         language: system
         types_or: [python, pyi]
+      - id: actions-lockfile
+        name: verify actions lockfile coverage
+        entry: gh actions-lock --verify-local
+        language: system
+        files: ^\.github/workflows/
+        pass_filenames: false
