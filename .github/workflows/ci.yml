@@ -1,0 +1,41 @@
+name: Cheddar Finance CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Fails if actions.lock is stale or doesn't cover every `uses:`
+      - name: Verify workflow lockfile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh extension install github/gh-actions-lock
+          gh actions-lock --verify
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --locked fails if uv.lock is out of date with pyproject.toml
+      - name: Install dependencies
+        run: uv sync --extra dev --locked
+
+      # Fails the build on any lint violation
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      # Coverage thresholds (100% line + branch) come from pyproject.toml
+      - name: Run tests with coverage
+        run: uv run pytest --cov --cov-report=term-missing
