@@ -7,3 +7,6 @@ __pycache__/
 
 # Coverage reports
 .coverage
+
+# Local SQLite databases
+*.db

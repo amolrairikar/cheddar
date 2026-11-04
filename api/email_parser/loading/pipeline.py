@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 class ParsedEntry:
     uid: str
     result: ParseResult
+    message_id: str  # the source email's Message-ID (its UID when the header is missing)
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ def load_and_parse(loader: ImapLoader) -> LoadResult:
             result.failed.append(FailedEntry(uid, str(exc)))
             log.debug("uid=%s failed: %s", uid, exc)
         else:
-            result.parsed.append(ParsedEntry(uid, parsed))
+            result.parsed.append(ParsedEntry(uid, parsed, loaded.email.message_id))
             log.debug("uid=%s parsed: %r", uid, parsed)
     log.info("loaded %d message(s): %d parsed, %d failed",
              len(result.parsed) + len(result.failed),

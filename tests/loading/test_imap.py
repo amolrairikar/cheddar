@@ -155,3 +155,60 @@ def test_unfetchable_and_unconvertible_messages_reported(fake_imap, config, monk
     with ImapLoader(config) as loader:
         results = loader.fetch_raw()
     assert [(r is not None, u) for r, u in results] == [(True, "1"), (False, "2"), (False, "3"), (False, "4")]
+
+
+def _pending(fake_imap, count=3):
+    fake_imap.messages = {str(i): bytes(build()) for i in range(1, count + 1)}
+
+
+def test_move_relocates_only_given_messages(fake_imap, config):
+    _pending(fake_imap)
+    with ImapLoader(config) as loader:
+        loader.move(["1", "2"], "transactions-processed")
+    assert set(fake_imap.folders["transactions-processed"]) == {"1", "2"}
+    assert set(fake_imap.messages) == {"3"}
+    calls = fake_imap.instances[0].calls
+    assert ("select", '"transactions-pending"', False) in calls
+    assert ("uid", "COPY", "1,2", '"transactions-processed"') in calls
+    assert ("expunge",) in calls
+
+
+def test_move_empty_list_does_not_touch_mailbox(fake_imap, config):
+    _pending(fake_imap)
+    with ImapLoader(config) as loader:
+        loader.move([], "transactions-processed")
+    assert [c[0] for c in fake_imap.instances[0].calls] == ["login", "logout"]
+    assert len(fake_imap.messages) == 3
+
+
+def test_move_to_missing_folder_keeps_messages(fake_imap, config):
+    _pending(fake_imap, 1)
+    with ImapLoader(config) as loader, pytest.raises(LoaderError, match="nowhere"):
+        loader.move(["1"], "nowhere")
+    assert set(fake_imap.messages) == {"1"}
+    assert ("expunge",) not in fake_imap.instances[0].calls
+
+
+def test_move_store_failure_is_loader_error(fake_imap, config):
+    _pending(fake_imap, 1)
+    fake_imap.store_status = "NO"
+    with ImapLoader(config) as loader, pytest.raises(LoaderError, match="transactions-pending"):
+        loader.move(["1"], "transactions-processed")
+
+
+def test_move_imap_error_is_loader_error(fake_imap, config):
+    _pending(fake_imap, 1)
+    fake_imap.copy_error = True
+    with ImapLoader(config) as loader, pytest.raises(LoaderError, match="transactions-processed"):
+        loader.move(["1"], "transactions-processed")
+
+
+def test_move_select_failure_is_loader_error(fake_imap, config):
+    fake_imap.select_status = "NO"
+    with ImapLoader(config) as loader, pytest.raises(LoaderError, match="transactions-pending"):
+        loader.move(["1"], "transactions-processed")
+
+
+def test_move_requires_connection(config):
+    with pytest.raises(LoaderError, match="not connected"):
+        ImapLoader(config).move(["1"], "transactions-processed")

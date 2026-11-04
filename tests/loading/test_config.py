@@ -5,6 +5,15 @@ from email_parser.loading import ImapConfig, LoaderConfigError
 def test_defaults():
     cfg = ImapConfig.from_env({"CHEDDAR_IMAP_USER": "a@b.c", "CHEDDAR_IMAP_PASSWORD": "pw"})
     assert (cfg.host, cfg.port, cfg.folder) == ("imap.gmail.com", 993, "transactions-pending")
+    assert cfg.processed_folder == "transactions-processed"
+    assert cfg.failed_folder == "transactions-failed"
+
+
+def test_destination_folder_overrides():
+    cfg = ImapConfig.from_env({"CHEDDAR_IMAP_USER": "a@b.c", "CHEDDAR_IMAP_PASSWORD": "pw",
+                               "CHEDDAR_IMAP_PROCESSED_FOLDER": "done",
+                               "CHEDDAR_IMAP_FAILED_FOLDER": "broken"})
+    assert (cfg.processed_folder, cfg.failed_folder) == ("done", "broken")
 
 
 def test_overrides():

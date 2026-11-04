@@ -44,6 +44,8 @@ Navigate to `Me` -> `Settings` -> `Notifications` -> `Email Notifications` -> Se
 
 ## Email Inbox Setup
 1. Create 3 labels/folders in your email inbox: transactions-pending, transactions-failed, and transactions-processed
+
+   After each refresh, emails that parsed successfully are moved to `transactions-processed` and emails that failed are moved to `transactions-failed`. These folders must exist, or the refresh returns an error. To use different folder names, set `CHEDDAR_IMAP_FOLDER` (default `transactions-pending`), `CHEDDAR_IMAP_PROCESSED_FOLDER` (default `transactions-processed`) and `CHEDDAR_IMAP_FAILED_FOLDER` (default `transactions-failed`).
 2. Set up the following email filtering rules for the banks/brokerages you use:
 
 | Institution      | From address           | Filter Criteria | Apply label          |
@@ -53,6 +55,9 @@ Navigate to `Me` -> `Settings` -> `Notifications` -> `Email Notifications` -> Se
 | Chase            | no.reply.alerts@chase.com      | Email body contains `You are receiving this alert because your transaction was more than the`            | transactions-pending |
 | Venmo            | venmo@venmo.com        | Subject contains `paid`          | transactions-pending |
 | Fidelity         | fidelity.alerts@fidelity.com   | Subject contains `Fidelity Alerts: Position Summary`     | transactions-pending |
+
+## Data Storage
+Parsed transactions and investment positions are saved to a SQLite database. By default this is `./cheddar.db`; set `CHEDDAR_DB_PATH` to use a different file. The tables are created automatically on first use. Each transaction is stored with the Message-ID of the email it came from, so processing the same email twice never creates a duplicate. Emails are moved out of `transactions-pending` only after their data has been saved, so if saving fails the emails stay in place and the next refresh retries them.
 
 # Supported Email Apps
 Any email providers that takes a username/password over IMAP. These include:

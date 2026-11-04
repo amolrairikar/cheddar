@@ -35,6 +35,23 @@ def test_mixed_batch(monkeypatch):
     assert [f.uid for f in result.failed] == ["2", "3", "4"]
 
 
+def test_parsed_entry_carries_message_id(monkeypatch):
+    tx = Transaction("m", Decimal(-1), "a", "t")
+    monkeypatch.setattr(pipeline, "parse_email", lambda email: tx)
+    loaded = LoadedEmail("7", Email("<abc@x>", "good", "s", "2026-10-15T14:30:00+00:00", "", ""))
+    result = load_and_parse(StubLoader([(loaded, "7")]))
+    assert [(p.uid, p.message_id) for p in result.parsed] == [("7", "<abc@x>")]
+
+
+def test_message_id_falls_back_to_uid(fake_imap, config, monkeypatch):
+    tx = Transaction("m", Decimal(-1), "a", "t")
+    monkeypatch.setattr(pipeline, "parse_email", lambda email: tx)
+    fake_imap.messages = {"5": bytes(build(message_id=None))}
+    with ImapLoader(config) as loader:
+        result = load_and_parse(loader)
+    assert [(p.uid, p.message_id) for p in result.parsed] == [("5", "5")]
+
+
 def test_unrecognized_sender_with_real_parsers():
     result = load_and_parse(StubLoader([item("9", "nobody@nowhere.example")]))
     assert result.parsed == [] and result.failed[0].uid == "9"

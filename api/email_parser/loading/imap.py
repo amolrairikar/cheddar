@@ -1,4 +1,7 @@
-"""Read-only IMAP fetching and conversion to the parsing ``Email`` model."""
+"""IMAP fetching, conversion to the parsing ``Email`` model, and moving handled mail.
+
+Fetching never modifies the mailbox; moving messages is a separate, explicit step.
+"""
 
 from __future__ import annotations
 
@@ -59,8 +62,9 @@ def message_to_email(msg: EmailMessage, uid: str) -> Email:
 class ImapLoader:
     """Context manager that fetches every message in the configured folder.
 
-    The folder is opened read-only and bodies are fetched with BODY.PEEK, so the
-    mailbox is never modified.
+    Fetching is non-destructive: the folder is opened read-only and bodies are
+    fetched with BODY.PEEK. Handled messages are relocated only by an explicit
+    call to ``move``.
     """
 
     def __init__(self, config: ImapConfig) -> None:
@@ -91,6 +95,40 @@ class ImapLoader:
         except (imaplib.IMAP4.error, OSError):
             pass
 
+    def _select_pending(self, conn: imaplib.IMAP4_SSL, *, readonly: bool) -> None:
+        folder = self.config.folder
+        try:
+            status, _ = conn.select(f'"{folder}"', readonly=readonly)
+        except imaplib.IMAP4.error as exc:
+            raise LoaderError(f"could not select folder {folder!r}") from exc
+        if status != "OK":
+            raise LoaderError(f"could not select folder {folder!r}")
+
+    def move(self, uids: list[str], destination: str) -> None:
+        """Move the given messages from the pending folder to ``destination``.
+
+        Copies first and only flags the originals ``\\Deleted`` (then expunges)
+        once the copy succeeded, so a missing destination loses nothing.
+        """
+        if self._conn is None:
+            raise LoaderError("loader is not connected; use it as a context manager")
+        if not uids:
+            return
+        conn = self._conn
+        self._select_pending(conn, readonly=False)
+        uid_set = ",".join(uids)
+        try:
+            status, _ = conn.uid("COPY", uid_set, f'"{destination}"')
+            if status != "OK":
+                raise LoaderError(f"could not copy messages to folder {destination!r}")
+            status, _ = conn.uid("STORE", uid_set, "+FLAGS", r"(\Deleted)")
+            if status != "OK":
+                raise LoaderError(f"could not remove moved messages from {self.config.folder!r}")
+            conn.expunge()
+        except imaplib.IMAP4.error as exc:
+            raise LoaderError(f"could not move messages to folder {destination!r}") from exc
+        log.info("moved %d message(s) to %s", len(uids), destination)
+
     def fetch_emails(self) -> list[LoadedEmail]:
         """Fetch all messages; undecodable ones are skipped with a warning."""
         return [loaded for loaded, _ in self.fetch_raw() if loaded is not None]
@@ -104,12 +142,7 @@ class ImapLoader:
         if self._conn is None:
             raise LoaderError("loader is not connected; use it as a context manager")
         conn, folder = self._conn, self.config.folder
-        try:
-            status, _ = conn.select(f'"{folder}"', readonly=True)
-        except imaplib.IMAP4.error as exc:
-            raise LoaderError(f"could not select folder {folder!r}") from exc
-        if status != "OK":
-            raise LoaderError(f"could not select folder {folder!r}")
+        self._select_pending(conn, readonly=True)
         status, data = conn.uid("SEARCH", None, "ALL")
         if status != "OK":
             raise LoaderError(f"search failed in folder {folder!r}")
