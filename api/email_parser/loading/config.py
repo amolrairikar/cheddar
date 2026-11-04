@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 DEFAULT_HOST = "imap.gmail.com"
 DEFAULT_PORT = 993
 DEFAULT_FOLDER = "transactions-pending"
+DEFAULT_PROCESSED_FOLDER = "transactions-processed"
+DEFAULT_FAILED_FOLDER = "transactions-failed"
 
 
 class LoaderError(Exception):
@@ -26,6 +28,8 @@ class ImapConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     folder: str = DEFAULT_FOLDER
+    processed_folder: str = DEFAULT_PROCESSED_FOLDER
+    failed_folder: str = DEFAULT_FAILED_FOLDER
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ImapConfig:
@@ -40,4 +44,7 @@ class ImapConfig:
             password=env["CHEDDAR_IMAP_PASSWORD"],
             host=env.get("CHEDDAR_IMAP_HOST") or DEFAULT_HOST,
             folder=env.get("CHEDDAR_IMAP_FOLDER") or DEFAULT_FOLDER,
+            processed_folder=(env.get("CHEDDAR_IMAP_PROCESSED_FOLDER")
+                              or DEFAULT_PROCESSED_FOLDER),
+            failed_folder=env.get("CHEDDAR_IMAP_FAILED_FOLDER") or DEFAULT_FAILED_FOLDER,
         )

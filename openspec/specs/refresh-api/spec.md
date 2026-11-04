@@ -16,7 +16,7 @@ The system SHALL provide a `GET /health` endpoint that returns HTTP 200 with the
 - **THEN** the system still responds 200 with `{"status": "ok"}`
 
 ### Requirement: Refresh transactions endpoint
-The system SHALL provide a `POST /refresh_transactions` endpoint that loads emails from the configured mailbox, parses them, and responds 200 with a JSON body containing `parsed_count`, `failed_count`, `parsed` and `failed`. Each `parsed` item SHALL contain the email `uid` and its parsed `result`, which is either a transaction or an investment position summary, distinguished by a `type` field. Each `failed` item SHALL contain the email `uid` and a `reason`. The endpoint SHALL NOT require authentication.
+The system SHALL provide a `POST /refresh_transactions` endpoint that loads emails from the configured pending folder, parses them, saves the parsed results to the database, moves each email out of the pending folder, and responds 200 with a JSON body containing `parsed_count`, `failed_count`, `parsed` and `failed`. Each `parsed` item SHALL contain the email `uid` and its parsed `result`, which is either a transaction or an investment position summary, distinguished by a `type` field. Each `failed` item SHALL contain the email `uid` and a `reason`. Parsed transactions and the positions of parsed position summaries SHALL be saved before any email is moved. Every successfully parsed email SHALL be moved to the processed folder, and every failed email SHALL be moved to the failed folder. The endpoint SHALL NOT require authentication.
 
 #### Scenario: Emails parsed successfully
 - **WHEN** a client sends `POST /refresh_transactions` and the mailbox holds emails that parse into a transaction and a position summary
@@ -31,11 +31,35 @@ The system SHALL provide a `POST /refresh_transactions` endpoint that loads emai
 - **THEN** the system responds 200 with counts of 0 and empty `parsed` and `failed` lists
 
 #### Scenario: Mailbox is not modified
-- **WHEN** a refresh completes
-- **THEN** no email has been moved, flagged or deleted in the mailbox
+- **WHEN** a refresh finds no emails in the pending folder
+- **THEN** no email is moved, flagged or deleted in the mailbox
+
+#### Scenario: Parsed emails moved to processed folder
+- **WHEN** a refresh parses emails successfully
+- **THEN** those emails are in the processed folder and no longer in the pending folder
+
+#### Scenario: Failed emails moved to failed folder
+- **WHEN** a refresh has emails that fail to be fetched, decoded or parsed
+- **THEN** those emails are in the failed folder and no longer in the pending folder
+
+#### Scenario: Second refresh does not reprocess
+- **WHEN** a refresh completes and a client sends `POST /refresh_transactions` again with no new mail
+- **THEN** the second response has counts of 0 and empty `parsed` and `failed` lists
+
+#### Scenario: Results saved to the database
+- **WHEN** a refresh parses one transaction and one position summary with two positions
+- **THEN** the database holds one transaction and two investment positions
+
+#### Scenario: Transactions record their source email
+- **WHEN** a refresh parses a transaction from an email
+- **THEN** the stored transaction records that email's Message-ID as its source email ID
+
+#### Scenario: Failed emails are not saved
+- **WHEN** a refresh has only emails that fail to parse
+- **THEN** nothing is added to the database
 
 ### Requirement: Refresh error responses
-The system SHALL report refresh failures with distinct HTTP status codes and SHALL NOT include mail credentials in any response body. A missing or invalid mail configuration SHALL produce HTTP 500 with a message naming the missing setting. A failure to log in to, select the folder in, or search the mailbox SHALL produce HTTP 502.
+The system SHALL report refresh failures with distinct HTTP status codes and SHALL NOT include mail credentials in any response body. A missing or invalid mail configuration SHALL produce HTTP 500 with a message naming the missing setting. A failure to log in to, select the folder in, or search the mailbox, or to move emails to the processed or failed folder, SHALL produce HTTP 502. A failure to save results to the database SHALL produce HTTP 500; in that case nothing from the refresh SHALL be stored and no email SHALL be moved, so the emails remain in the pending folder for the next refresh.
 
 #### Scenario: Mail configuration missing
 - **WHEN** a client sends `POST /refresh_transactions` and a required mail credential setting is not configured
@@ -48,6 +72,22 @@ The system SHALL report refresh failures with distinct HTTP status codes and SHA
 #### Scenario: Mailbox folder cannot be selected or searched
 - **WHEN** a client sends `POST /refresh_transactions` and the configured folder cannot be selected or searched
 - **THEN** the system responds 502
+
+#### Scenario: Destination folder missing
+- **WHEN** a client sends `POST /refresh_transactions` and the processed or failed folder does not exist in the mailbox
+- **THEN** the system responds 502 with a message naming that folder
+
+#### Scenario: Database failure
+- **WHEN** a client sends `POST /refresh_transactions` and saving to the database fails
+- **THEN** the system responds 500, nothing from that refresh is stored, and every email remains in the pending folder
+
+#### Scenario: Retry after database failure
+- **WHEN** a refresh fails because of a database error and the problem is then fixed and a client sends `POST /refresh_transactions` again
+- **THEN** the same emails are processed, saved and moved
+
+#### Scenario: Retry after failed move does not duplicate
+- **WHEN** a refresh saves its transactions but moving emails fails with 502, leaving the emails in the pending folder, and a client sends `POST /refresh_transactions` again
+- **THEN** the second refresh responds 200, moves the emails, and the database holds exactly one transaction per email
 
 ### Requirement: Single refresh at a time
 The system SHALL run at most one refresh at a time. A `POST /refresh_transactions` request received while a refresh is in progress SHALL be rejected with HTTP 409 without contacting the mail server. The system SHALL allow a new refresh once the previous one has finished, whether it succeeded or failed.
