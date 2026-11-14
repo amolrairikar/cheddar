@@ -57,7 +57,7 @@ Navigate to `Me` -> `Settings` -> `Notifications` -> `Email Notifications` -> Se
 | Fidelity         | fidelity.alerts@fidelity.com   | Subject contains `Fidelity Alerts: Position Summary`     | transactions-pending |
 
 ## Data Storage
-Parsed transactions and investment positions are saved to a SQLite database. By default this is `./cheddar.db`; set `CHEDDAR_DB_PATH` to use a different file. The tables are created automatically on first use. Each transaction is stored with the Message-ID of the email it came from, so processing the same email twice never creates a duplicate. Emails are moved out of `transactions-pending` only after their data has been saved, so if saving fails the emails stay in place and the next refresh retries them.
+Parsed transactions and investment positions are saved to a SQLite database. By default this is `./cheddar.db`; set `CHEDDAR_DB_PATH` to use a different file.
 
 # Supported Email Apps
 Any email providers that takes a username/password over IMAP. These include:

@@ -17,9 +17,11 @@ from email_parser.loading import (
 )
 from email_parser.parsing import PositionSummary
 from fastapi import FastAPI, HTTPException
+from routers import transactions
 from schemas import HealthResponse, RefreshResponse
 
 app = FastAPI(title="cheddar")
+app.include_router(transactions.router)
 
 _refresh_lock = threading.Lock()
 
@@ -61,3 +63,4 @@ def refresh_transactions() -> RefreshResponse:
     finally:
         _refresh_lock.release()
     return RefreshResponse.from_load_result(loaded)
+

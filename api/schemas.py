@@ -77,3 +77,28 @@ class RefreshResponse(BaseModel):
             parsed=[ParsedItem(uid=e.uid, result=_result(e.result)) for e in loaded.parsed],
             failed=[FailedItem(uid=e.uid, reason=e.reason) for e in loaded.failed],
         )
+
+
+class TransactionItem(BaseModel):
+    id: int
+    original_merchant: str
+    original_amount: str
+    account: str
+    transaction_timestamp: str
+    category: str | None
+    transaction_type: Literal["Income", "Expense"] | None
+    tags: list[str]
+    deleted_at: str | None
+
+
+class TransactionListResponse(BaseModel):
+    transactions: list[TransactionItem]
+
+
+class DeleteRequest(BaseModel):
+    ids: list[int]
+
+
+class DeleteResponse(BaseModel):
+    deleted: list[int]
+    not_found: list[int]

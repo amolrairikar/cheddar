@@ -149,3 +149,109 @@ def test_failed_save_rolls_back(tmp_path):
             db.save_transaction(c, tx(), "<b@x>")
             db.save_transaction(c, tx(), None)
         assert rows(c, "SELECT count(*) FROM transactions") == [(0,)]
+
+
+OLD_SCHEMA = """
+CREATE TABLE transactions (
+    id INTEGER PRIMARY KEY,
+    source_email_id TEXT NOT NULL UNIQUE,
+    original_merchant TEXT NOT NULL,
+    original_amount TEXT NOT NULL,
+    account TEXT NOT NULL,
+    transaction_timestamp TEXT NOT NULL,
+    category TEXT,
+    transaction_type TEXT CHECK (transaction_type IN ('Income', 'Expense'))
+);
+"""
+
+
+def seed(conn, count=3):
+    for n in range(count):
+        db.save_transaction(conn, tx(merchant=f"M{n}"), f"<{n}@x>")
+
+
+def test_fresh_database_has_deleted_at_column(conn):
+    columns = [r[1] for r in rows(conn, "PRAGMA table_info(transactions)")]
+    assert "deleted_at" in columns
+
+
+def test_older_database_is_upgraded_in_place(tmp_path):
+    path = str(tmp_path / "old.db")
+    with closing(sqlite3.connect(path)) as old, old:
+        old.executescript(OLD_SCHEMA)
+        old.executemany(
+            "INSERT INTO transactions (source_email_id, original_merchant, original_amount,"
+            " account, transaction_timestamp) VALUES (?, 'M', '1.00', 'A', 'T')",
+            [("<1@x>",), ("<2@x>",)],
+        )
+    with closing(db.connect(path)) as c:
+        assert rows(c, "SELECT source_email_id, deleted_at FROM transactions ORDER BY id") == [
+            ("<1@x>", None), ("<2@x>", None)]
+    with closing(db.connect(path)) as c:
+        assert rows(c, "SELECT count(*) FROM transactions") == [(2,)]
+
+
+def test_new_transaction_is_active(conn):
+    seed(conn, 1)
+    assert rows(conn, "SELECT deleted_at FROM transactions") == [(None,)]
+
+
+def test_soft_delete_some_and_missing(conn):
+    seed(conn)
+    assert db.soft_delete_transactions(conn, [1, 3, 99]) == [1, 3]
+    assert rows(conn, "SELECT id FROM transactions WHERE deleted_at IS NOT NULL ORDER BY id") == [
+        (1,), (3,)]
+
+
+def test_soft_delete_keeps_values_and_tags(conn):
+    seed(conn, 1)
+    conn.execute("INSERT INTO transaction_tags VALUES (1, 'vacation')")
+    db.soft_delete_transactions(conn, [1])
+    assert rows(conn, "SELECT original_merchant, source_email_id FROM transactions") == [
+        ("M0", "<0@x>")]
+    assert rows(conn, "SELECT tag FROM transaction_tags") == [("vacation",)]
+
+
+def test_soft_delete_twice_keeps_first_time(conn):
+    seed(conn, 1)
+    assert db.soft_delete_transactions(conn, [1]) == [1]
+    first = rows(conn, "SELECT deleted_at FROM transactions")
+    assert db.soft_delete_transactions(conn, [1]) == []
+    assert rows(conn, "SELECT deleted_at FROM transactions") == first
+
+
+def test_soft_delete_duplicate_ids_and_empty(conn):
+    seed(conn, 1)
+    assert db.soft_delete_transactions(conn, [1, 1]) == [1]
+    assert db.soft_delete_transactions(conn, []) == []
+
+
+def test_list_active_and_deleted(conn):
+    seed(conn)
+    db.soft_delete_transactions(conn, [2])
+    assert [t["id"] for t in db.list_transactions(conn, deleted=False)] == [1, 3]
+    listed = db.list_transactions(conn, deleted=True)
+    assert [t["id"] for t in listed] == [2]
+    assert listed[0]["deleted_at"] is not None
+    assert listed[0]["original_merchant"] == "M1"
+
+
+def test_list_includes_tags(conn):
+    seed(conn, 2)
+    conn.executemany("INSERT INTO transaction_tags VALUES (?, ?)",
+                     [(1, "vacation"), (1, "shared")])
+    listed = db.list_transactions(conn, deleted=False)
+    assert listed[0]["tags"] == ["shared", "vacation"]
+    assert listed[1]["tags"] == []
+
+
+def test_list_empty(conn):
+    assert db.list_transactions(conn, deleted=False) == []
+
+
+def test_soft_deleted_transaction_is_not_reimported(conn):
+    seed(conn, 1)
+    db.soft_delete_transactions(conn, [1])
+    db.save_transaction(conn, tx(merchant="Other"), "<0@x>")
+    assert rows(conn, "SELECT original_merchant, deleted_at IS NOT NULL FROM transactions") == [
+        ("M0", 1)]
