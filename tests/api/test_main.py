@@ -272,3 +272,139 @@ def test_retry_after_failed_move_does_not_duplicate(client, database):
     assert client.post("/refresh_transactions").status_code == 200
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert FakeIMAP.messages == {}
+
+
+def seed_transactions(database, count=3):
+    from decimal import Decimal
+
+    from email_parser.parsing.models import Transaction
+
+    with closing(db.connect(str(database))) as conn, conn:
+        for n in range(count):
+            db.save_transaction(
+                conn, Transaction(f"M{n}", Decimal("-1.50"), "Chase 1234", "2026-10-29T22:01:51+00:00"),
+                f"<{n}@x>")
+
+
+def listed_ids(client, **params):
+    response = client.get("/transactions", params=params)
+    assert response.status_code == 200
+    return [t["id"] for t in response.json()["transactions"]]
+
+
+def delete(client, body):
+    return client.request("DELETE", "/transactions", json=body)
+
+
+def test_list_empty_database(client):
+    assert client.get("/transactions").json() == {"transactions": []}
+
+
+def test_list_active_and_deleted(client, database):
+    seed_transactions(database)
+    assert delete(client, {"ids": [2]}).status_code == 200
+    assert listed_ids(client) == [1, 3]
+    assert listed_ids(client, deleted="true") == [2]
+    [item] = client.get("/transactions", params={"deleted": "true"}).json()["transactions"]
+    assert item["original_merchant"] == "M1"
+    assert item["original_amount"] == "-1.50"
+    assert item["deleted_at"] is not None
+
+
+def test_list_shows_tags(client, database):
+    seed_transactions(database, 1)
+    with closing(sqlite3.connect(database)) as conn, conn:
+        conn.executemany("INSERT INTO transaction_tags VALUES (1, ?)",
+                         [("vacation",), ("shared",)])
+    [item] = client.get("/transactions").json()["transactions"]
+    assert item["tags"] == ["shared", "vacation"]
+    assert item["deleted_at"] is None
+
+
+def test_delete_transactions(client, database):
+    seed_transactions(database)
+    response = delete(client, {"ids": [1, 2]})
+    assert response.status_code == 200
+    assert response.json() == {"deleted": [1, 2], "not_found": []}
+    assert listed_ids(client) == [3]
+    assert query(database, "SELECT count(*) FROM transactions") == [(3,)]
+
+
+def test_delete_reports_missing_ids(client, database):
+    seed_transactions(database, 1)
+    assert delete(client, {"ids": [1, 9999]}).json() == {"deleted": [1], "not_found": [9999]}
+
+
+def test_delete_already_deleted_id_is_not_found(client, database):
+    seed_transactions(database, 1)
+    delete(client, {"ids": [1]})
+    [(first,)] = query(database, "SELECT deleted_at FROM transactions")
+    assert delete(client, {"ids": [1]}).json() == {"deleted": [], "not_found": [1]}
+    assert query(database, "SELECT deleted_at FROM transactions") == [(first,)]
+
+
+def test_delete_duplicate_ids(client, database):
+    seed_transactions(database, 1)
+    assert delete(client, {"ids": [1, 1, 7, 7]}).json() == {"deleted": [1], "not_found": [7]}
+
+
+def test_delete_empty_list(client):
+    assert delete(client, {"ids": []}).json() == {"deleted": [], "not_found": []}
+
+
+@pytest.mark.parametrize("body", [{"ids": ["a"]}, {}, {"ids": 1}])
+def test_delete_invalid_body_is_422(client, database, body):
+    seed_transactions(database, 1)
+    assert delete(client, body).status_code == 422
+    assert listed_ids(client) == [1]
+
+
+def test_delete_without_body_is_422(client):
+    assert client.request("DELETE", "/transactions").status_code == 422
+
+
+def test_delete_during_refresh_is_not_blocked(client, database):
+    seed_transactions(database, 1)
+    assert main._refresh_lock.acquire(blocking=False)
+    try:
+        response = delete(client, {"ids": [1]})
+    finally:
+        main._refresh_lock.release()
+    assert response.status_code == 200
+
+
+def test_list_database_failure_is_500(client, monkeypatch):
+    def boom(conn, deleted):
+        raise sqlite3.OperationalError("disk error")
+
+    monkeypatch.setattr(db, "list_transactions", boom)
+    response = client.get("/transactions")
+    assert response.status_code == 500
+    assert "database" in response.json()["detail"]
+
+
+def test_delete_database_failure_is_500_and_changes_nothing(client, database, monkeypatch):
+    seed_transactions(database, 2)
+    real = db.soft_delete_transactions
+
+    def boom(conn, ids):
+        real(conn, ids)
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(db, "soft_delete_transactions", boom)
+    response = delete(client, {"ids": [1, 2]})
+    assert response.status_code == 500
+    assert "database" in response.json()["detail"]
+    assert query(database, "SELECT count(*) FROM transactions WHERE deleted_at IS NULL") == [(2,)]
+
+
+def test_refresh_does_not_reimport_deleted_transaction(client, database):
+    FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
+    client.post("/refresh_transactions")
+    assert listed_ids(client) == [1]
+    delete(client, {"ids": [1]})
+    FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
+    assert client.post("/refresh_transactions").status_code == 200
+    assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
+    assert listed_ids(client) == []
+    assert listed_ids(client, deleted="true") == [1]
