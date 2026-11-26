@@ -45,8 +45,8 @@ def health() -> HealthResponse:
     return HealthResponse()
 
 
-@app.post("/refresh_transactions")
-def refresh_transactions() -> RefreshResponse:
+@app.post("/refresh")
+def refresh() -> RefreshResponse:
     if not _refresh_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="a refresh is already in progress")
     try:
@@ -55,7 +55,8 @@ def refresh_transactions() -> RefreshResponse:
             _persist(loaded)
             cfg = loader.config
             loader.move([e.uid for e in loaded.parsed], cfg.processed_folder)
-            loader.move([e.uid for e in loaded.failed], cfg.failed_folder)
+            # Emails that were not downloaded stay pending for the next refresh.
+            loader.move([e.uid for e in loaded.failed if e.downloaded], cfg.failed_folder)
     except LoaderConfigError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except LoaderError as exc:

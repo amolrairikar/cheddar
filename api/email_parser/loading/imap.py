@@ -20,6 +20,9 @@ from .config import ImapConfig, LoaderError
 
 log = logging.getLogger(__name__)
 
+TIMEOUT_SECONDS = 30  # limit on each wait for the server, not on a whole load
+MAX_CONSECUTIVE_BROKEN_FETCHES = 3
+
 
 @dataclass(frozen=True)
 class LoadedEmail:
@@ -72,16 +75,20 @@ class ImapLoader:
         self._conn: imaplib.IMAP4_SSL | None = None
 
     def __enter__(self) -> Self:
+        self._connect()
+        return self
+
+    def _connect(self) -> imaplib.IMAP4_SSL:
         cfg = self.config
         log.info("connecting to %s:%s as %s", cfg.host, cfg.port, cfg.user)
         try:
-            conn = imaplib.IMAP4_SSL(cfg.host, cfg.port)
+            conn = imaplib.IMAP4_SSL(cfg.host, cfg.port, timeout=TIMEOUT_SECONDS)
             self._conn = conn
             conn.login(cfg.user, cfg.password)
         except (imaplib.IMAP4.error, OSError) as exc:
             self._close()
             raise LoaderError(f"could not log in to {cfg.host} as {cfg.user}") from exc
-        return self
+        return conn
 
     def __exit__(self, *exc_info) -> None:
         self._close()
@@ -95,14 +102,37 @@ class ImapLoader:
         except (imaplib.IMAP4.error, OSError):
             pass
 
-    def _select_pending(self, conn: imaplib.IMAP4_SSL, *, readonly: bool) -> None:
+    def _discard(self) -> None:
+        """Close a broken connection without sending anything more on it.
+
+        A late reply may still be unread, and ``imaplib`` would hand its data to
+        the next command, so the connection must never be reused.
+        """
+        conn, self._conn = self._conn, None
+        try:
+            conn.shutdown()
+        except OSError:
+            pass
+
+    def _reconnect(self, uidvalidity: list) -> imaplib.IMAP4_SSL:
+        """Open a new connection in which the UIDs found earlier are still valid."""
+        log.info("reconnecting to %s", self.config.host)
+        conn = self._connect()
+        if self._select_pending(conn, readonly=True) != uidvalidity:
+            raise LoaderError(
+                f"message identifiers changed in folder {self.config.folder!r}")
+        return conn
+
+    def _select_pending(self, conn: imaplib.IMAP4_SSL, *, readonly: bool) -> list:
+        """Select the pending folder and return its UIDVALIDITY response data."""
         folder = self.config.folder
         try:
             status, _ = conn.select(f'"{folder}"', readonly=readonly)
-        except imaplib.IMAP4.error as exc:
+        except (imaplib.IMAP4.error, OSError) as exc:
             raise LoaderError(f"could not select folder {folder!r}") from exc
         if status != "OK":
             raise LoaderError(f"could not select folder {folder!r}")
+        return conn.response("UIDVALIDITY")[1]
 
     def move(self, uids: list[str], destination: str) -> None:
         """Move the given messages from the pending folder to ``destination``.
@@ -125,49 +155,76 @@ class ImapLoader:
             if status != "OK":
                 raise LoaderError(f"could not remove moved messages from {self.config.folder!r}")
             conn.expunge()
-        except imaplib.IMAP4.error as exc:
+        except (imaplib.IMAP4.error, OSError) as exc:
             raise LoaderError(f"could not move messages to folder {destination!r}") from exc
         log.info("moved %d message(s) to %s", len(uids), destination)
 
     def fetch_emails(self) -> list[LoadedEmail]:
         """Fetch all messages; undecodable ones are skipped with a warning."""
-        return [loaded for loaded, _ in self.fetch_raw() if loaded is not None]
+        return [loaded for loaded, _, _ in self.fetch_raw() if loaded is not None]
 
-    def fetch_raw(self) -> list[tuple[LoadedEmail | None, str]]:
-        """Fetch all messages as ``(loaded_or_None, uid)`` pairs.
+    def fetch_raw(self) -> list[tuple[LoadedEmail | None, str, bool]]:
+        """Fetch all messages as ``(loaded_or_None, uid, downloaded)`` tuples.
 
-        ``None`` marks a message that could not be converted, so callers can
-        report it as a failure instead of losing it.
+        ``None`` marks a message that could not be downloaded or converted, so
+        callers can report it as a failure instead of losing it. ``downloaded``
+        tells the two apart.
+
+        A fetch that breaks the connection is followed by a reconnect. Raises
+        ``LoaderError``, returning nothing, if that fails or if too many fetches
+        in a row break the connection.
         """
         if self._conn is None:
             raise LoaderError("loader is not connected; use it as a context manager")
         conn, folder = self._conn, self.config.folder
-        self._select_pending(conn, readonly=True)
-        status, data = conn.uid("SEARCH", None, "ALL")
+        uidvalidity = self._select_pending(conn, readonly=True)
+        try:
+            status, data = conn.uid("SEARCH", None, "ALL")
+        except (imaplib.IMAP4.error, OSError) as exc:
+            raise LoaderError(f"search failed in folder {folder!r}") from exc
         if status != "OK":
             raise LoaderError(f"search failed in folder {folder!r}")
         uids = data[0].decode().split() if data and data[0] else []
         log.info("found %d message(s) in %s", len(uids), folder)
 
-        results: list[tuple[LoadedEmail | None, str]] = []
+        results: list[tuple[LoadedEmail | None, str, bool]] = []
+        broken = 0  # consecutive fetches that broke the connection
         for uid in uids:
-            status, parts = conn.uid("FETCH", uid, "(BODY.PEEK[])")
+            try:
+                status, parts = conn.uid("FETCH", uid, "(BODY.PEEK[])")
+            except (imaplib.IMAP4.abort, OSError) as exc:  # abort subclasses error
+                log.warning("connection broke fetching uid %s", uid, exc_info=True)
+                results.append((None, uid, False))
+                self._discard()
+                broken += 1
+                if broken >= MAX_CONSECUTIVE_BROKEN_FETCHES:
+                    raise LoaderError(
+                        f"connection broke on {broken} messages in a row"
+                        f" in folder {folder!r}") from exc
+                conn = self._reconnect(uidvalidity)
+                continue
+            except imaplib.IMAP4.error:  # a complete reply; the connection is usable
+                log.warning("could not fetch uid %s", uid, exc_info=True)
+                results.append((None, uid, False))
+                broken = 0
+                continue
+            broken = 0
             raw = next((p[1] for p in parts or [] if isinstance(p, tuple)), None)
             if status != "OK" or raw is None:
                 log.warning("could not fetch uid %s", uid)
-                results.append((None, uid))
+                results.append((None, uid, False))
                 continue
             try:
                 msg = message_from_bytes(raw, policy=policy.default)
                 email = message_to_email(msg, uid)
             except Exception:
                 log.warning("could not convert uid %s", uid, exc_info=True)
-                results.append((None, uid))
+                results.append((None, uid, True))
                 continue
             log.debug(
                 "uid=%s message_id=%s sender=%s subject=%s date=%s\n"
                 "--- plain ---\n%s\n--- html ---\n%s",
                 uid, email.message_id, email.sender, email.subject, email.date,
                 email.plain, email.html)
-            results.append((LoadedEmail(uid, email), uid))
+            results.append((LoadedEmail(uid, email), uid, True))
         return results
