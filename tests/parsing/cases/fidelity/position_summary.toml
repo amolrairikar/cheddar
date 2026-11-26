@@ -1,0 +1,46 @@
+sender = "Fidelity Investments <Fidelity.Alerts@Fidelity.com>"
+subject = "Fidelity Alerts: Position Summary"
+date = "2026-10-30T10:52:16+00:00"
+body = """
+Fidelity Alert: Position Summary
+Subscription Alert
+Fri Oct 30, 2026
+06:48:47 a.m. ET
+Position Summary
+Account: XXXXX1234
+Positions
+Symbol
+Acct Type
+Quantity
+Price
+Value
+FDRXX
+1
+100.00000
+1.00
+$100.00
+FZROX
+1
+10.00000
+25.00
+$250.00
+Total
+$350.00
+Position Summary
+Or log in to Fidelity.com and select Accounts & Trade > Account Positions.
+Unsubscribe | Chat With Us | Fidelity Alerts User Agreement
+Please do not reply to this email. To verify this email was sent by Fidelity Investments, log in to your account and visit News & Research > Alerts > View Alerts History.
+Important information:
+Fidelity automatically emails certain alerts to customers who have provided an email address.
+Fidelity Brokerage Services LLC, Member NYSE, SIPC, 900 Salem Street, Smithfield, RI 02917.
+000000
+© 2026 FMR LLC. All rights reserved.
+"""
+
+[expected]
+account = "Fidelity 1234"
+balance = "350.00"
+positions = [
+  { ticker = "FDRXX", account_type = "1", quantity = "100.00000", price = "1.00", value = "100.00" },
+  { ticker = "FZROX", account_type = "1", quantity = "10.00000", price = "25.00", value = "250.00" },
+]

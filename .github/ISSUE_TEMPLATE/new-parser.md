@@ -22,9 +22,17 @@ labels: new-institution
 - **Where the data lives:** <!-- subject / plain-text body / HTML body -->
 
 ## Sample email(s)
-<!-- Attach the raw email (.eml) or paste the HTML/text of one example per email type. -->
+<!--
+One example per email type. Please don't attach or paste the raw email (.eml) or its HTML: they hide personal data in headers, links and tracking tokens.
 
-> **Redact all personal information before posting.** Remove or replace names, full account/card numbers (keep the last 4 digits only if you like), balances you consider private, addresses, and any links or tracking tokens. Keep the layout and wording exactly as received.
+Instead, save the email as .eml and run this from a clone of the repository (it runs locally):
+
+    uv run python scripts/capture_email_case.py path/to/email.eml <institution>/<email_type>
+
+Redact the draft it writes, then paste its contents here. If the draft has no body or is missing details you can see in the email, try again with --plain (delete the first draft or use another name).
+-->
+
+> **Nothing is redacted automatically.** Before posting, remove or replace names, email addresses, account/card numbers (keep the last 4 digits only if you like), amounts or balances you consider private, merchants, locations, addresses and links. Keep the wording and line layout exactly as captured.
 
 ## Expected result
 <!-- For each sample, what should be parsed? e.g. merchant "Starbucks", amount -5.40, account "Visa 1234" -->

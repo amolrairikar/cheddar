@@ -17,7 +17,7 @@ where = ["api"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["api", "tests/loading"]
+pythonpath = ["api", "scripts", "tests/loading"]
 filterwarnings = ["error"]
 
 [tool.coverage.run]

@@ -15,3 +15,7 @@ __pycache__/
 .env
 .api.pid
 .api.log
+
+# Raw emails and unredacted test case drafts
+*.eml
+*.toml.draft

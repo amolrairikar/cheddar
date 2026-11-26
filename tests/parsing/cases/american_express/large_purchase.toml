@@ -1,0 +1,29 @@
+sender = "American Express <AmericanExpress@welcome.americanexpress.com>"
+subject = "Large Purchase Approved"
+date = "2026-10-26T13:56:05+00:00"
+body = """
+See the details about this purchase
+JANE DOE
+Account Ending: 12345
+There was a large purchase on your Card
+Dear JANE DOE,
+As you requested, we're letting you know that this purchase was more than $1.00.
+You can change the dollar amount of these large purchase notifications online.
+UBER ONE
+$9.99*
+Mon, Oct 26, 2026
+*The amount above may not reflect the final amount as some merchants issue a pre-authorization charge
+You can track this spending charge online and be notified when the final amount is posted to your account.
+If you still have questions about this transaction, we suggest contacting the merchant directly.
+Contact us
+Update your email address
+Privacy statement
+To stop alerts click here
+Your account information is included above to help you recognize this as a customer care email from American Express. To learn more about email security or report a suspicious email, please visit us at americanexpress.com/phishing. We kindly ask you not to reply to this email but instead contact us via Customer Care.
+© 2026 American Express. All rights reserved.
+"""
+
+[expected]
+merchant = "UBER ONE"
+amount = "-9.99"
+account = "American Express 12345"

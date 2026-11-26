@@ -1,0 +1,9 @@
+# Made-up variant: received payment that was not a request
+sender = "venmo@venmo.com"
+subject = "Jane Doe paid $5.25 to your Venmo account"
+date = "2026-10-15T14:30:00+00:00"
+
+[expected]
+merchant = "Jane Doe"
+amount = "5.25"
+account = "Venmo"

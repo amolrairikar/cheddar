@@ -20,3 +20,7 @@ The following are exempt from the OpenSpec workflow and may be edited directly:
 
 - Documentation-only changes (e.g., `README.md`, other `.md` docs, code comments).
 - Non-user-facing changes, such as CI/CD workflows, build and tooling configuration, test-only changes, and internal refactors with no observable behavior change.
+
+## Git commits
+
+DO NOT commit any code. Leave all changes uncommitted for the user to review and commit.

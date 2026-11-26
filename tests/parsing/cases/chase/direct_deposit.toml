@@ -1,0 +1,8 @@
+sender = "Chase <no.reply.alerts@chase.com>"
+subject = "Your $1,000.00 direct deposit posted to account ending in (...1234)"
+date = "2026-10-30T08:00:55+00:00"
+
+[expected]
+merchant = "direct deposit"
+amount = "1000.00"
+account = "Chase Checking 1234"
