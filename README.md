@@ -81,3 +81,15 @@ Any email providers that takes a username/password over IMAP. These include:
 
 ## Requesting a new parser
 Want support for a bank or brokerage that isn't listed? [Fill out the new parser issue template](https://github.com/amolrairikar/cheddar/issues/new?template=new-parser.md) with a redacted sample of the email.
+
+# Development
+## Parser test cases
+Each file in `tests/parsing/cases/<institution>/` is one test: the sender, subject, date, the body text the parser reads, and the `[expected]` result. To add one from a real email saved as `.eml`:
+
+```sh
+uv run python scripts/capture_email_case.py path/to/email.eml <institution>/<case_name>
+```
+
+This writes a `.toml.draft` file, which git ignores. **Nothing is redacted automatically.** Redact it, fill in `[expected]` from what the email says, then rename it to `.toml`. No test code is needed. Pass `--plain` to capture the plain-text part, for example when a new parser reads it.
+
+Cases skip HTML conversion. If real markup converts incorrectly, reduce it to a small made-up example in `tests/parsing/test_text.py`.

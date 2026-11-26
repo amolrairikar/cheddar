@@ -1,0 +1,8 @@
+sender = "Venmo <venmo@venmo.com>"
+subject = "John Doe paid your $48.50 request"
+date = "2026-11-01T20:54:25+00:00"
+
+[expected]
+merchant = "John Doe"
+amount = "48.50"
+account = "Venmo"

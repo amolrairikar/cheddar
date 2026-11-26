@@ -1,8 +1,7 @@
-Message-ID: <fixture-capital-one-1@example.com>
-From: "Capital One | Venture X" <capitalone@notification.capitalone.com>
-Date: Thu, 29 Oct 2026 22:01:51 +0000
-Subject: A new transaction was charged to your account
-
+sender = "Capital One | Venture X <capitalone@notification.capitalone.com>"
+subject = "A new transaction was charged to your account"
+date = "2026-10-29T22:01:51+00:00"
+body = """
 View posted transaction details.
 --
 Capital One | Venture X
@@ -50,3 +49,9 @@ https://click-notification.capitalone.com/f/a/REDACTED
 Products and services are offered by Capital One, N.A.
 
 Copyright 2026 Capital One. Capital One is a federally registered service mark.
+"""
+
+[expected]
+merchant = "Whole Foods Market"
+amount = "-12.34"
+account = "Venture X 1234"
