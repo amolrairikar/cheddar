@@ -2,7 +2,7 @@ import logging
 from decimal import Decimal
 
 from email_parser.loading import ImapLoader, LoadedEmail, load_and_parse, pipeline
-from email_parser.parsing import Email
+from email_parser.parsing import Email, ParseError
 from email_parser.parsing.models import Transaction
 from imap_fakes import build
 
@@ -16,7 +16,7 @@ class StubLoader:
 
 
 def item(uid, sender):
-    return LoadedEmail(uid, Email(uid, sender, "s", "2026-10-15T14:30:00+00:00", "", "")), uid
+    return LoadedEmail(uid, Email(uid, sender, "s", "2026-10-15T14:30:00+00:00", "", "")), uid, True
 
 
 def test_mixed_batch(monkeypatch):
@@ -25,12 +25,11 @@ def test_mixed_batch(monkeypatch):
     def fake_parse(email):
         if email.sender == "good":
             return tx
-        from email_parser.parsing import ParseError
         raise ParseError("bad " + email.sender)
 
     monkeypatch.setattr(pipeline, "parse_email", fake_parse)
     result = load_and_parse(StubLoader([item("1", "good"), item("2", "malformed"),
-                                        item("3", "unknown"), (None, "4")]))
+                                        item("3", "unknown"), (None, "4", True)]))
     assert [(p.uid, p.result) for p in result.parsed] == [("1", tx)]
     assert [f.uid for f in result.failed] == ["2", "3", "4"]
 
@@ -39,7 +38,7 @@ def test_parsed_entry_carries_message_id(monkeypatch):
     tx = Transaction("m", Decimal(-1), "a", "t")
     monkeypatch.setattr(pipeline, "parse_email", lambda email: tx)
     loaded = LoadedEmail("7", Email("<abc@x>", "good", "s", "2026-10-15T14:30:00+00:00", "", ""))
-    result = load_and_parse(StubLoader([(loaded, "7")]))
+    result = load_and_parse(StubLoader([(loaded, "7", True)]))
     assert [(p.uid, p.message_id) for p in result.parsed] == [("7", "<abc@x>")]
 
 
@@ -73,3 +72,16 @@ def test_debug_outcome_logged(caplog):
     with caplog.at_level(logging.DEBUG, logger="email_parser"):
         load_and_parse(StubLoader([item("5", "nobody@nowhere.example")]))
     assert "uid=5 failed" in caplog.text
+
+
+def test_download_and_decoding_failures_distinguished(monkeypatch):
+    def fail(email):
+        raise ParseError("unparsable")
+
+    monkeypatch.setattr(pipeline, "parse_email", fail)
+    result = load_and_parse(StubLoader([(None, "1", False), (None, "2", True),
+                                        item("3", "bank")]))
+    assert [(f.uid, f.reason, f.downloaded) for f in result.failed] == [
+        ("1", "message could not be downloaded", False),
+        ("2", "message could not be decoded", True),
+        ("3", "unparsable", True)]

@@ -23,6 +23,7 @@ class ParsedEntry:
 class FailedEntry:
     uid: str
     reason: str
+    downloaded: bool  # False: the message is still unread and worth retrying
 
 
 @dataclass
@@ -34,15 +35,16 @@ class LoadResult:
 def load_and_parse(loader: ImapLoader) -> LoadResult:
     """Fetch every message and parse it; per-message failures are recorded."""
     result = LoadResult()
-    for loaded, uid in loader.fetch_raw():
+    for loaded, uid, downloaded in loader.fetch_raw():
         if loaded is None:
-            result.failed.append(FailedEntry(uid, "message could not be fetched or decoded"))
-            log.debug("uid=%s failed: could not be fetched or decoded", uid)
+            reason = f"message could not be {'decoded' if downloaded else 'downloaded'}"
+            result.failed.append(FailedEntry(uid, reason, downloaded))
+            log.debug("uid=%s failed: %s", uid, reason)
             continue
         try:
             parsed = parse_email(loaded.email)
         except ParseError as exc:
-            result.failed.append(FailedEntry(uid, str(exc)))
+            result.failed.append(FailedEntry(uid, str(exc), downloaded))
             log.debug("uid=%s failed: %s", uid, exc)
         else:
             result.parsed.append(ParsedEntry(uid, parsed, loaded.email.message_id))

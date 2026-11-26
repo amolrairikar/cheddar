@@ -19,6 +19,8 @@ def fake_imap(monkeypatch):
     FakeIMAP.instances, FakeIMAP.messages = [], {}
     FakeIMAP.login_error, FakeIMAP.select_status = False, "OK"
     FakeIMAP.store_status, FakeIMAP.copy_error = "OK", False
+    FakeIMAP.errors, FakeIMAP.drops = {}, set()
+    FakeIMAP.reconnect_failure, FakeIMAP.uidvalidity = None, []
     FakeIMAP.folders = {"transactions-processed": {}, "transactions-failed": {}}
     monkeypatch.setattr(imap_mod.imaplib, "IMAP4_SSL", FakeIMAP)
     return FakeIMAP

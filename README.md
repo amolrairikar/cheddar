@@ -45,7 +45,6 @@ Navigate to `Me` -> `Settings` -> `Notifications` -> `Email Notifications` -> Se
 ## Email Inbox Setup
 1. Create 3 labels/folders in your email inbox: transactions-pending, transactions-failed, and transactions-processed
 
-   After each refresh, emails that parsed successfully are moved to `transactions-processed` and emails that failed are moved to `transactions-failed`. These folders must exist, or the refresh returns an error. To use different folder names, set `CHEDDAR_IMAP_FOLDER` (default `transactions-pending`), `CHEDDAR_IMAP_PROCESSED_FOLDER` (default `transactions-processed`) and `CHEDDAR_IMAP_FAILED_FOLDER` (default `transactions-failed`).
 2. Set up the following email filtering rules for the banks/brokerages you use:
 
 | Institution      | From address           | Filter Criteria | Apply label          |

@@ -24,26 +24,61 @@ class FakeIMAP:
     select_status = "OK"
     store_status = "OK"
     copy_error = False
+    errors: ClassVar[dict] = {}  # (command, uid or None) -> exception raised once
+    drops: ClassVar[set] = set()  # (command, uid or None) at which a connection drops once
+    reconnect_failure = None  # "connect", "login" or "select": fails after the first connection
+    uidvalidity: ClassVar[list] = []  # one value per connection; the last one repeats
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, timeout=None):
+        self._fail_reconnect("connect", bool(FakeIMAP.instances))
+        self.timeout = timeout
         self.calls = []
         self._deleted = set()
+        self._dropped = False
         FakeIMAP.instances.append(self)
 
+    def _fail_reconnect(self, stage, is_reconnect):
+        if is_reconnect and FakeIMAP.reconnect_failure == stage:
+            raise OSError(f"{stage} timed out")
+
+    def shutdown(self):
+        self.calls.append(("shutdown",))
+
+    def response(self, code):
+        values = FakeIMAP.uidvalidity
+        if not values:
+            return code, [None]
+        return code, [values[min(FakeIMAP.instances.index(self), len(values) - 1)]]
+
+    def _check(self, command, uid=None):
+        """Raise for an injected error, and on every call after a dropped connection."""
+        if (command, uid) in FakeIMAP.drops:
+            FakeIMAP.drops.remove((command, uid))
+            self._dropped = True
+        if self._dropped:
+            raise imaplib.IMAP4.abort("connection dropped")
+        if (command, uid) in FakeIMAP.errors:
+            raise FakeIMAP.errors.pop((command, uid))
+
     def login(self, user, password):
+        self._fail_reconnect("login", self is not FakeIMAP.instances[0])
         if FakeIMAP.login_error:
             raise imaplib.IMAP4.error("AUTHENTICATIONFAILED")
         self.calls.append(("login", user))
 
     def logout(self):
+        self._check("logout")
         self.calls.append(("logout",))
 
     def select(self, folder, readonly=False):
         self.calls.append(("select", folder, readonly))
+        self._check("select")
+        self._fail_reconnect("select", self is not FakeIMAP.instances[0])
         return FakeIMAP.select_status, [b""]
 
     def uid(self, command, *args):
         self.calls.append(("uid", command, *args))
+        self._check(command, args[0] if command == "FETCH" else None)
         if command == "SEARCH":
             return "OK", [" ".join(FakeIMAP.messages).encode()]
         if command == "COPY":
@@ -64,6 +99,7 @@ class FakeIMAP:
 
     def expunge(self):
         self.calls.append(("expunge",))
+        self._check("expunge")
         for uid in self._deleted:
             FakeIMAP.messages.pop(uid, None)
         self._deleted.clear()

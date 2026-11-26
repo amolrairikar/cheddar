@@ -71,13 +71,18 @@ def test_health_needs_no_credentials(client, monkeypatch):
     assert FakeIMAP.instances == []
 
 
+def test_old_refresh_path_is_404(client):
+    assert client.post("/refresh_transactions").status_code == 404
+    assert FakeIMAP.instances == []
+
+
 def test_refresh_mixed_batch(client):
     FakeIMAP.messages = {
         "1": eml("chase/credit_card_transaction.eml"),
         "2": eml("fidelity/investment_snapshot.eml"),
         "3": bytes(build(sender="Nobody <nobody@unknown.example>")),
     }
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 200
     body = response.json()
     assert body["parsed_count"] == 2
@@ -92,7 +97,7 @@ def test_refresh_mixed_batch(client):
 
 
 def test_refresh_empty_mailbox(client):
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 200
     assert response.json() == {"parsed_count": 0, "failed_count": 0, "parsed": [], "failed": []}
 
@@ -103,7 +108,7 @@ def test_refresh_moves_emails_to_processed_and_failed(client):
         "2": eml("fidelity/investment_snapshot.eml"),
         "3": bytes(build(sender="Nobody <nobody@unknown.example>")),
     }
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 200
     assert set(FakeIMAP.folders["transactions-processed"]) == {"1", "2"}
     assert set(FakeIMAP.folders["transactions-failed"]) == {"3"}
@@ -111,7 +116,7 @@ def test_refresh_moves_emails_to_processed_and_failed(client):
 
 
 def test_refresh_empty_mailbox_does_not_modify_mailbox(client):
-    client.post("/refresh_transactions")
+    client.post("/refresh")
     calls = FakeIMAP.instances[0].calls
     assert not [c for c in calls if c[0] == "uid" and c[1] in ("STORE", "COPY", "MOVE")]
     assert ("expunge",) not in calls
@@ -119,8 +124,8 @@ def test_refresh_empty_mailbox_does_not_modify_mailbox(client):
 
 def test_second_refresh_has_nothing_to_reprocess(client):
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    assert client.post("/refresh_transactions").json()["parsed_count"] == 1
-    assert client.post("/refresh_transactions").json() == {
+    assert client.post("/refresh").json()["parsed_count"] == 1
+    assert client.post("/refresh").json() == {
         "parsed_count": 0, "failed_count": 0, "parsed": [], "failed": []}
 
 
@@ -128,14 +133,14 @@ def test_refresh_uses_configured_destination_folders(client, monkeypatch):
     monkeypatch.setenv("CHEDDAR_IMAP_PROCESSED_FOLDER", "done")
     FakeIMAP.folders["done"] = {}
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
     assert set(FakeIMAP.folders["done"]) == {"1"}
 
 
 def test_missing_destination_folder_is_502(client):
     del FakeIMAP.folders["transactions-processed"]
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 502
     assert "transactions-processed" in response.json()["detail"]
     assert set(FakeIMAP.messages) == {"1"}
@@ -143,7 +148,7 @@ def test_missing_destination_folder_is_502(client):
 
 def test_missing_config_is_500(client, monkeypatch):
     monkeypatch.delenv("CHEDDAR_IMAP_PASSWORD")
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 500
     assert "CHEDDAR_IMAP_PASSWORD" in response.json()["detail"]
     assert PASSWORD not in response.text
@@ -152,29 +157,129 @@ def test_missing_config_is_500(client, monkeypatch):
 
 def test_login_failure_is_502(client):
     FakeIMAP.login_error = True
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 502
     assert PASSWORD not in response.text
 
 
 def test_select_failure_is_502(client):
     FakeIMAP.select_status = "NO"
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 502
     assert "transactions-pending" in response.json()["detail"]
 
 
 def test_search_failure_is_502(client, monkeypatch):
     monkeypatch.setattr(FakeIMAP, "uid", lambda self, command, *args: ("NO", []))
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 502
     assert "search failed" in response.json()["detail"]
+
+
+def three_emails():
+    return {
+        "1": eml("chase/credit_card_transaction.eml"),
+        "2": eml("capital_one/credit_card_transaction.eml"),
+        "3": eml("american_express/credit_card_transaction.eml"),
+    }
+
+
+def assert_nothing_moved():
+    assert set(FakeIMAP.messages) == {"1", "2", "3"}
+    assert FakeIMAP.folders == {"transactions-processed": {}, "transactions-failed": {}}
+
+
+def assert_only_second_left_pending(response, database):
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["uid"] for item in body["parsed"]] == ["1", "3"]
+    assert body["failed"] == [{"uid": "2", "reason": "message could not be downloaded"}]
+    assert body["failed_count"] == 1
+    assert query(database, "SELECT count(*) FROM transactions") == [(2,)]
+    assert set(FakeIMAP.folders["transactions-processed"]) == {"1", "3"}
+    assert FakeIMAP.folders["transactions-failed"] == {}
+    assert set(FakeIMAP.messages) == {"2"}
+
+
+def test_fetch_error_reply_leaves_email_pending_and_next_refresh_retries(client, database):
+    FakeIMAP.messages = three_emails()
+    FakeIMAP.errors = {("FETCH", "2"): imaplib.IMAP4.error("BAD fetch")}
+    assert_only_second_left_pending(client.post("/refresh"), database)
+
+    assert client.post("/refresh").json()["parsed_count"] == 1
+    assert query(database, "SELECT count(*) FROM transactions") == [(3,)]
+    assert set(FakeIMAP.folders["transactions-processed"]) == {"1", "2", "3"}
+    assert FakeIMAP.messages == {}
+
+
+@pytest.mark.parametrize("reply", [("NO", [None]), ("OK", [b")"])])
+def test_fetch_without_message_leaves_email_pending(client, database, monkeypatch, reply):
+    FakeIMAP.messages = three_emails()
+    real = FakeIMAP.uid
+
+    def uid(self, command, *args):
+        if command == "FETCH" and args[0] == "2":
+            return reply
+        return real(self, command, *args)
+
+    monkeypatch.setattr(FakeIMAP, "uid", uid)
+    assert_only_second_left_pending(client.post("/refresh"), database)
+
+
+def test_broken_fetch_reconnects_and_leaves_email_pending(client, database):
+    FakeIMAP.messages = three_emails()
+    FakeIMAP.drops = {("FETCH", "2")}
+    assert_only_second_left_pending(client.post("/refresh"), database)
+    assert len(FakeIMAP.instances) == 2
+
+
+def test_undecodable_email_moves_to_failed(client):
+    FakeIMAP.messages = {"1": b"From: a@b.com\r\n\r\nno date"}
+    body = client.post("/refresh").json()
+    assert body["failed"] == [{"uid": "1", "reason": "message could not be decoded"}]
+    assert set(FakeIMAP.folders["transactions-failed"]) == {"1"}
+
+
+@pytest.mark.parametrize("drops, reconnect_failure", [
+    ({("FETCH", "1")}, "connect"),
+    ({("FETCH", "2")}, "connect"),
+    ({("FETCH", "2")}, "login"),
+    ({("FETCH", "1"), ("FETCH", "2"), ("FETCH", "3")}, None),
+])
+def test_stopped_fetch_is_502_saves_and_moves_nothing(client, database, drops, reconnect_failure):
+    FakeIMAP.messages = three_emails()
+    FakeIMAP.drops = set(drops)
+    FakeIMAP.reconnect_failure = reconnect_failure
+    response = client.post("/refresh")
+    assert response.status_code == 502
+    assert PASSWORD not in response.text
+    assert not database.exists() or query(database, "SELECT count(*) FROM transactions") == [(0,)]
+    assert_nothing_moved()
+
+    FakeIMAP.instances, FakeIMAP.drops, FakeIMAP.reconnect_failure = [], set(), None
+    assert client.post("/refresh").status_code == 200
+    assert query(database, "SELECT count(*) FROM transactions") == [(3,)]
+    assert FakeIMAP.messages == {}
+
+
+def test_connection_error_during_move_keeps_saved_rows(client, database):
+    FakeIMAP.messages = three_emails()
+    FakeIMAP.errors = {("COPY", None): OSError("network down")}
+    response = client.post("/refresh")
+    assert response.status_code == 502
+    assert PASSWORD not in response.text
+    assert query(database, "SELECT count(*) FROM transactions") == [(3,)]
+    assert_nothing_moved()
+
+    assert client.post("/refresh").status_code == 200
+    assert query(database, "SELECT count(*) FROM transactions") == [(3,)]
+    assert FakeIMAP.messages == {}
 
 
 def test_concurrent_refresh_is_409(client):
     assert main._refresh_lock.acquire(blocking=False)
     try:
-        response = client.post("/refresh_transactions")
+        response = client.post("/refresh")
     finally:
         main._refresh_lock.release()
     assert response.status_code == 409
@@ -182,17 +287,17 @@ def test_concurrent_refresh_is_409(client):
 
 
 def test_lock_released_after_success_and_errors(client, monkeypatch):
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
 
     monkeypatch.delenv("CHEDDAR_IMAP_PASSWORD")
-    assert client.post("/refresh_transactions").status_code == 500
+    assert client.post("/refresh").status_code == 500
     monkeypatch.setenv("CHEDDAR_IMAP_PASSWORD", PASSWORD)
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
 
     FakeIMAP.login_error = True
-    assert client.post("/refresh_transactions").status_code == 502
+    assert client.post("/refresh").status_code == 502
     FakeIMAP.login_error = False
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
     assert not main._refresh_lock.locked()
 
 
@@ -201,14 +306,14 @@ def test_refresh_saves_results_to_database(client, database):
         "1": eml("chase/credit_card_transaction.eml"),
         "2": eml("fidelity/investment_snapshot.eml"),
     }
-    positions = client.post("/refresh_transactions").json()["parsed"][1]["result"]["positions"]
+    positions = client.post("/refresh").json()["parsed"][1]["result"]["positions"]
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert query(database, "SELECT count(*) FROM investment_positions") == [(len(positions),)]
 
 
 def test_transaction_records_source_message_id(client, database):
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    client.post("/refresh_transactions")
+    client.post("/refresh")
     [(source,)] = query(database, "SELECT source_email_id FROM transactions")
     assert source.startswith("<") or source == "1"
     assert source in FakeIMAP.folders["transactions-processed"]["1"].decode()
@@ -216,7 +321,7 @@ def test_transaction_records_source_message_id(client, database):
 
 def test_only_failed_emails_save_nothing(client, database):
     FakeIMAP.messages = {"1": bytes(build(sender="Nobody <nobody@unknown.example>"))}
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
     assert query(database, "SELECT count(*) FROM transactions") == [(0,)]
     assert set(FakeIMAP.folders["transactions-failed"]) == {"1"}
 
@@ -233,7 +338,7 @@ def test_database_failure_is_500_and_moves_nothing(client, database, monkeypatch
         raise sqlite3.OperationalError("disk full")
 
     monkeypatch.setattr(db, "save_position_summary", boom)
-    response = client.post("/refresh_transactions")
+    response = client.post("/refresh")
     assert response.status_code == 500
     assert "database" in response.json()["detail"]
     assert query(database, "SELECT count(*) FROM transactions") == [(0,)]
@@ -246,7 +351,7 @@ def test_database_failure_is_500_and_moves_nothing(client, database, monkeypatch
 def test_unusable_database_path_is_500(client, tmp_path, monkeypatch):
     monkeypatch.setenv("CHEDDAR_DB_PATH", str(tmp_path / "missing-dir" / "x.db"))
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    assert client.post("/refresh_transactions").status_code == 500
+    assert client.post("/refresh").status_code == 500
     assert set(FakeIMAP.messages) == {"1"}
 
 
@@ -255,8 +360,8 @@ def test_retry_after_database_failure_saves_and_moves(client, database, monkeypa
     with monkeypatch.context() as m:
         m.setattr(db, "save_transaction",
                   lambda *args: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
-        assert client.post("/refresh_transactions").status_code == 500
-    assert client.post("/refresh_transactions").status_code == 200
+        assert client.post("/refresh").status_code == 500
+    assert client.post("/refresh").status_code == 200
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert set(FakeIMAP.folders["transactions-processed"]) == {"1"}
 
@@ -264,12 +369,12 @@ def test_retry_after_database_failure_saves_and_moves(client, database, monkeypa
 def test_retry_after_failed_move_does_not_duplicate(client, database):
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
     del FakeIMAP.folders["transactions-processed"]
-    assert client.post("/refresh_transactions").status_code == 502
+    assert client.post("/refresh").status_code == 502
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert set(FakeIMAP.messages) == {"1"}
 
     FakeIMAP.folders["transactions-processed"] = {}
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert FakeIMAP.messages == {}
 
@@ -400,11 +505,11 @@ def test_delete_database_failure_is_500_and_changes_nothing(client, database, mo
 
 def test_refresh_does_not_reimport_deleted_transaction(client, database):
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    client.post("/refresh_transactions")
+    client.post("/refresh")
     assert listed_ids(client) == [1]
     delete(client, {"ids": [1]})
     FakeIMAP.messages = {"1": eml("chase/credit_card_transaction.eml")}
-    assert client.post("/refresh_transactions").status_code == 200
+    assert client.post("/refresh").status_code == 200
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert listed_ids(client) == []
     assert listed_ids(client, deleted="true") == [1]
