@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import closing
+from datetime import date as Date
 from decimal import Decimal
 
 import db
@@ -255,3 +256,96 @@ def test_soft_deleted_transaction_is_not_reimported(conn):
     db.save_transaction(conn, tx(merchant="Other"), "<0@x>")
     assert rows(conn, "SELECT original_merchant, deleted_at IS NOT NULL FROM transactions") == [
         ("M0", 1)]
+
+
+def test_database_without_edit_columns_is_upgraded(tmp_path):
+    path = str(tmp_path / "old.db")
+    with closing(sqlite3.connect(path)) as old, old:
+        old.executescript(OLD_SCHEMA)
+        old.execute("ALTER TABLE transactions ADD COLUMN deleted_at TEXT")
+        old.execute(
+            "INSERT INTO transactions (source_email_id, original_merchant, original_amount,"
+            " account, transaction_timestamp, deleted_at) VALUES ('<1@x>', 'M', '1.00', 'A',"
+            " 'T', 'D')")
+    for _ in range(2):
+        with closing(db.connect(path)) as c:
+            assert rows(c, "SELECT original_merchant, deleted_at, merchant, amount"
+                           " FROM transactions") == [("M", "D", None, None)]
+
+
+def ids(conn, **filters):
+    return [t["id"] for t in db.list_transactions(conn, False, **filters)]
+
+
+def test_update_set_and_revert(conn):
+    seed(conn, 1)
+    item = db.update_transaction(conn, 1, {"merchant": "New", "amount": "0.10"})
+    assert (item["merchant"], item["amount"]) == ("New", "0.10")
+    assert (item["original_merchant"], item["original_amount"]) == ("M0", "-23.45")
+    item = db.update_transaction(conn, 1, {"merchant": None, "amount": None})
+    assert (item["merchant"], item["amount"]) == ("M0", "-23.45")
+
+
+def test_update_tags_only_touches_that_transaction(conn):
+    seed(conn, 2)
+    db.update_transaction(conn, 2, {"tags": ["keep"]})
+    assert db.update_transaction(conn, 1, {"tags": ["b", "a", "b"]})["tags"] == ["a", "b"]
+    assert db.update_transaction(conn, 1, {})["tags"] == ["a", "b"]
+    assert db.update_transaction(conn, 1, {"tags": []})["tags"] == []
+    assert rows(conn, "SELECT * FROM transaction_tags") == [(2, "keep")]
+
+
+def test_update_missing_or_deleted_returns_none(conn):
+    seed(conn, 1)
+    assert db.update_transaction(conn, 9, {"tags": ["a"]}) is None
+    db.soft_delete_transactions(conn, [1])
+    assert db.update_transaction(conn, 1, {"category": "X", "tags": ["a"]}) is None
+    assert rows(conn, "SELECT category FROM transactions") == [(None,)]
+    assert rows(conn, "SELECT count(*) FROM transaction_tags") == [(0,)]
+
+
+def test_update_rejects_protected_columns(conn):
+    seed(conn, 1)
+    with pytest.raises(ValueError, match="account"):
+        db.update_transaction(conn, 1, {"account": "Other"})
+
+
+def test_resaving_same_email_keeps_edits(conn):
+    seed(conn, 1)
+    edited = db.update_transaction(
+        conn, 1, {"merchant": "New", "amount": "1", "category": "C",
+                  "transaction_type": "Income", "tags": ["t"]})
+    db.save_transaction(conn, tx(merchant="Reimported"), "<0@x>")
+    assert db.list_transactions(conn, deleted=False) == [edited]
+
+
+def test_filter_dates_are_inclusive_utc_days(conn):
+    stamps = ["2026-09-30T23:59:59+00:00", "2026-10-01T00:00:00+00:00",
+              "2026-10-31T23:59:59+00:00", "2026-11-01T00:00:00+00:00"]
+    for n, stamp in enumerate(stamps):
+        db.save_transaction(conn, tx(timestamp=stamp), f"<{n}@x>")
+    assert ids(conn, start_date=Date(2026, 10, 1), end_date=Date(2026, 10, 31)) == [2, 3]
+    assert ids(conn, start_date=Date(2026, 10, 31)) == [3, 4]
+    assert ids(conn, end_date=Date(2026, 10, 1)) == [1, 2]
+
+
+def test_filter_text_ignores_case_beyond_ascii_and_is_literal(conn):
+    db.save_transaction(conn, tx(merchant="CAFÉ 100%_OFF", account="Épargne"), "<a@x>")
+    db.save_transaction(conn, tx(merchant="Cafe 100 XOFF"), "<b@x>")
+    db.update_transaction(conn, 1, {"category": "Straße", "tags": ["Été"]})
+    assert ids(conn, merchants=["café"]) == [1]
+    assert ids(conn, merchants=["%_"]) == [1]
+    assert ids(conn, accounts=["épargne"]) == [1]
+    assert ids(conn, categories=["STRASSE"]) == [1]  # NULL category never matches
+    assert ids(conn, tags=["été"]) == [1]
+    assert ids(conn, merchants=["' OR 1=1 --"]) == []
+
+
+def test_filters_combine(conn):
+    seed(conn)
+    db.update_transaction(conn, 1, {"transaction_type": "Expense", "tags": ["a", "b"]})
+    db.update_transaction(conn, 2, {"transaction_type": "Income", "tags": ["b"]})
+    assert ids(conn, tags=["a", "b"]) == [1, 2]
+    assert ids(conn, tags=["b"], transaction_types=["Income"]) == [2]
+    assert ids(conn, merchants=["m0", "m1"], transaction_types=["Expense"]) == [1]
+    assert ids(conn, tags=[]) == [1, 2, 3]

@@ -21,6 +21,10 @@ The following are exempt from the OpenSpec workflow and may be edited directly:
 - Documentation-only changes (e.g., `README.md`, other `.md` docs, code comments).
 - Non-user-facing changes, such as CI/CD workflows, build and tooling configuration, test-only changes, and internal refactors with no observable behavior change.
 
+## API reference
+
+ALWAYS update `api/API_REFERENCE.md` after any API change (e.g., endpoints, query or payload parameters, response fields, status codes, error messages), so it matches the code.
+
 ## Git commits
 
 DO NOT commit any code. Leave all changes uncommitted for the user to review and commit.

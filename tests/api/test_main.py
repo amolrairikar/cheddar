@@ -474,7 +474,7 @@ def test_delete_during_refresh_is_not_blocked(client, database):
 
 
 def test_list_database_failure_is_500(client, monkeypatch):
-    def boom(conn, deleted):
+    def boom(conn, deleted, **filters):
         raise sqlite3.OperationalError("disk error")
 
     monkeypatch.setattr(db, "list_transactions", boom)
@@ -508,3 +508,232 @@ def test_refresh_does_not_reimport_deleted_transaction(client, database):
     assert query(database, "SELECT count(*) FROM transactions") == [(1,)]
     assert listed_ids(client) == []
     assert listed_ids(client, deleted="true") == [1]
+
+
+def patch(client, transaction_id, body):
+    return client.patch(f"/transactions/{transaction_id}", json=body)
+
+
+def stored(client, **params):
+    return client.get("/transactions", params=params).json()["transactions"]
+
+
+def test_list_unedited_merchant_and_amount(client, database):
+    seed_transactions(database, 1)
+    [item] = stored(client)
+    assert (item["merchant"], item["amount"]) == ("M0", "-1.50")
+
+
+def test_update_fields_leaves_others_unchanged(client, database):
+    seed_transactions(database, 2)
+    before = stored(client)
+    changes = {"category": " Travel ", "transaction_type": "Expense", "tags": ["work"]}
+    response = patch(client, 1, changes)
+    assert response.status_code == 200
+    expected = {**before[0], **changes, "category": "Travel"}
+    assert response.json() == expected
+    assert stored(client) == [expected, before[1]]
+
+
+def test_update_merchant_and_amount_then_revert(client, database):
+    seed_transactions(database, 1)
+    body = patch(client, 1, {"merchant": "Uber", "amount": "-15.00", "category": "Travel",
+                             "transaction_type": "Income"}).json()
+    assert (body["merchant"], body["amount"]) == ("Uber", "-15.00")
+    assert (body["original_merchant"], body["original_amount"]) == ("M0", "-1.50")
+    body = patch(client, 1, {"merchant": None, "amount": None, "category": None,
+                             "transaction_type": None}).json()
+    assert (body["merchant"], body["amount"]) == ("M0", "-1.50")
+    assert body["category"] is None and body["transaction_type"] is None
+    assert query(database, "SELECT merchant, amount FROM transactions") == [(None, None)]
+
+
+@pytest.mark.parametrize("amount, expected", [
+    ("0", "0"), ("1E+3", "1000"), ("1e-7", "0.0000001"), (-12.25, "-12.25"),
+    ("12345678901234567890", "12345678901234567890"),
+])
+def test_update_amount_is_plain_notation(client, database, amount, expected):
+    seed_transactions(database, 1)
+    assert patch(client, 1, {"amount": amount}).json()["amount"] == expected
+
+
+def test_update_empty_merchant_is_kept(client, database):
+    seed_transactions(database, 1)
+    assert patch(client, 1, {"merchant": ""}).json()["merchant"] == ""
+
+
+def test_update_replaces_and_clears_tags(client, database):
+    seed_transactions(database, 1)
+    patch(client, 1, {"tags": ["a", "b"]})
+    assert patch(client, 1, {"tags": [" c ", "c"]}).json()["tags"] == ["c"]
+    assert patch(client, 1, {"category": "X"}).json()["tags"] == ["c"]
+    assert patch(client, 1, {"tags": []}).json()["tags"] == []
+
+
+def test_update_empty_object_changes_nothing(client, database):
+    seed_transactions(database, 1)
+    [before] = stored(client)
+    response = patch(client, 1, {})
+    assert response.status_code == 200
+    assert response.json() == before
+
+
+@pytest.mark.parametrize("field", [
+    "id", "original_merchant", "original_amount", "transaction_timestamp", "account",
+    "deleted_at", "source_email_id", "unknown",
+])
+def test_update_protected_or_unknown_field_is_422(client, database, field):
+    seed_transactions(database, 1)
+    [before] = stored(client)
+    assert patch(client, 1, {"category": "Travel", field: "1"}).status_code == 422
+    assert stored(client) == [before]
+
+
+@pytest.mark.parametrize("body", [
+    {"transaction_type": "Transfer"}, {"amount": "abc"}, {"amount": "NaN"},
+    {"amount": "Infinity"}, {"amount": "1e999999999"}, {"amount": "1e-999999999"},
+    {"amount": "123456789012345678901"}, {"category": "  "}, {"merchant": 5},
+    {"tags": None}, {"tags": [""]}, {"tags": [None]}, {"tags": "a"}, [], "x", None,
+])
+def test_update_invalid_body_is_422(client, database, body):
+    seed_transactions(database, 1)
+    [before] = stored(client)
+    assert patch(client, 1, body).status_code == 422
+    assert stored(client) == [before]
+
+
+@pytest.mark.parametrize("body", [
+    r'''{"category": "X", "merchant": "\ud800"}''', r'''{"category": "\ud800"}''',
+    r'''{"category": "X", "tags": ["ok", "\ud800"]}''',
+])
+def test_update_unpaired_surrogate_is_422_and_changes_nothing(client, database, body):
+    seed_transactions(database, 1)
+    patch(client, 1, {"tags": ["old"]})
+    [before] = stored(client)
+    response = client.patch(
+        "/transactions/1", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "text must be valid Unicode"}
+    assert stored(client) == [before]
+
+
+def test_delete_unpaired_surrogate_is_422(client, database):
+    seed_transactions(database, 1)
+    response = client.request(
+        "DELETE", "/transactions", content=r'''{"ids": ["\ud800"]}''',
+        headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "text must be valid Unicode"}
+    assert listed_ids(client) == [1]
+
+
+@pytest.mark.parametrize("transaction_id", ["abc", "0", "-1", str(2**63)])
+def test_update_invalid_id_is_422(client, transaction_id):
+    assert patch(client, transaction_id, {}).status_code == 422
+
+
+@pytest.mark.parametrize("transaction_id", [9999, 2**63 - 1])
+def test_update_unknown_id_is_404(client, database, transaction_id):
+    seed_transactions(database, 1)
+    response = patch(client, transaction_id, {"tags": ["a"]})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "transaction not found"}
+
+
+def test_update_deleted_transaction_is_404(client, database):
+    seed_transactions(database, 1)
+    delete(client, {"ids": [1]})
+    [before] = stored(client, deleted="true")
+    assert patch(client, 1, {"category": "X", "tags": ["a"]}).status_code == 404
+    assert stored(client, deleted="true") == [before]
+
+
+def test_update_database_failure_is_500_and_changes_nothing(client, database, monkeypatch):
+    seed_transactions(database, 1)
+    [before] = stored(client)
+    real = db.update_transaction
+
+    def boom(*args):
+        real(*args)
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(db, "update_transaction", boom)
+    response = patch(client, 1, {"category": "X", "tags": ["a"]})
+    assert response.status_code == 500
+    assert response.json() == {"detail": "could not update the transaction in the database"}
+    assert stored(client) == [before]
+
+
+def test_update_during_refresh_is_not_blocked(client, database):
+    seed_transactions(database, 1)
+    assert main._refresh_lock.acquire(blocking=False)
+    try:
+        response = patch(client, 1, {"category": "X"})
+    finally:
+        main._refresh_lock.release()
+    assert response.status_code == 200
+
+
+def test_edits_survive_refresh_of_same_email(client):
+    FakeIMAP.messages = {"1": case_eml("chase/card_alert")}
+    client.post("/refresh")
+    edited = patch(client, 1, {"merchant": "Mine", "amount": "-1", "category": "C",
+                               "transaction_type": "Expense", "tags": ["t"]}).json()
+    FakeIMAP.messages = {"1": case_eml("chase/card_alert")}
+    assert client.post("/refresh").status_code == 200
+    assert stored(client) == [edited]
+
+
+def test_list_filters(client, database):
+    seed_transactions(database)
+    patch(client, 1, {"category": "Travel", "transaction_type": "Expense",
+                      "tags": ["work", "shared"]})
+    patch(client, 2, {"category": "Food", "transaction_type": "Income",
+                      "tags": ["shared"], "merchant": "Joe's Diner"})
+    assert listed_ids(client, merchant="diner") == [2]
+    assert listed_ids(client, merchant="m1") == []
+    assert listed_ids(client, merchant=["m0", "m2"]) == [1, 3]
+    assert listed_ids(client, merchant="%") == []
+    assert listed_ids(client, category="travel") == [1]
+    assert listed_ids(client, category=["travel", "food"]) == [1, 2]
+    assert listed_ids(client, account="chase 1234") == [1, 2, 3]
+    assert listed_ids(client, account="Chase") == []
+    assert listed_ids(client, tag=["work", "shared"]) == [1, 2]
+    assert listed_ids(client, transaction_type="Income") == [2]
+    assert listed_ids(client, transaction_type=["Income", "Expense"]) == [1, 2]
+    assert listed_ids(client, category="travel", transaction_type="Expense") == [1]
+    assert listed_ids(client, category="travel", transaction_type="Income") == []
+    [item] = stored(client, tag="work")
+    assert item["tags"] == ["shared", "work"]
+
+
+def test_list_date_filters(client, database):
+    seed_transactions(database, 1)  # dated 2026-10-29
+    assert listed_ids(client, start_date="2026-10-29", end_date="2026-10-29") == [1]
+    assert listed_ids(client, start_date="2026-10-30") == []
+    assert listed_ids(client, end_date="2026-10-28") == []
+
+
+def test_list_filters_with_deleted(client, database):
+    seed_transactions(database)
+    delete(client, {"ids": [2]})
+    assert listed_ids(client, deleted="true", account="Chase 1234") == [2]
+    assert listed_ids(client, account="Chase 1234") == [1, 3]
+
+
+@pytest.mark.parametrize("params", [
+    {"deleted": "maybe"}, {"start_date": "yesterday"}, {"start_date": ""},
+    {"start_date": "86400"}, {"end_date": "2026-10-29T00:00:00"},
+    {"end_date": "2026-02-30"}, {"transaction_type": "Transfer"},
+    {"transaction_type": "income"}, {"merchant": ""}, {"category": "  "},
+    {"account": ""}, {"tag": ["ok", ""]},
+])
+def test_list_invalid_filter_is_422(client, params):
+    assert client.get("/transactions", params=params).status_code == 422
+
+
+def test_list_reversed_date_range_is_422(client):
+    response = client.get(
+        "/transactions", params={"start_date": "2026-11-02", "end_date": "2026-11-01"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "start_date must not be after end_date"}

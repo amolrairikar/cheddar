@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from email_parser.loading import LoadResult
 from email_parser.parsing.models import ParseResult, PositionSummary
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class HealthResponse(BaseModel):
@@ -83,6 +83,8 @@ class TransactionItem(BaseModel):
     id: int
     original_merchant: str
     original_amount: str
+    merchant: str
+    amount: str
     account: str
     transaction_timestamp: str
     category: str | None
@@ -93,6 +95,32 @@ class TransactionItem(BaseModel):
 
 class TransactionListResponse(BaseModel):
     transactions: list[TransactionItem]
+
+
+NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class TransactionUpdate(BaseModel):
+    """The fields to change; omitted ones stay as they are. Other fields are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The constraint changes no valid value, but makes Pydantic reject text that is not
+    # valid Unicode, which could not be stored.
+    merchant: Annotated[str, StringConstraints(min_length=0)] | None = None
+    # The digit limit stops a huge exponent from expanding into a huge stored string.
+    amount: Annotated[Decimal, Field(max_digits=20)] | None = None
+    category: NonBlank | None = None
+    transaction_type: Literal["Income", "Expense"] | None = None
+    # Not nullable: [] removes all tags.
+    tags: list[NonBlank] = Field(default_factory=list)
+
+    def changes(self) -> dict[str, object]:
+        """Only the fields the client sent, with the amount in plain notation."""
+        changes = self.model_dump(exclude_unset=True)
+        if changes.get("amount") is not None:
+            changes["amount"] = format(changes["amount"], "f")
+        return changes
 
 
 class DeleteRequest(BaseModel):
