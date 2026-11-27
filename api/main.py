@@ -16,7 +16,10 @@ from email_parser.loading import (
     load_and_parse,
 )
 from email_parser.parsing import PositionSummary
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from routers import transactions
 from schemas import HealthResponse, RefreshResponse
 
@@ -24,6 +27,19 @@ app = FastAPI(title="cheddar")
 app.include_router(transactions.router)
 
 _refresh_lock = threading.Lock()
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+    """FastAPI's usual 422, except when the rejected input cannot be sent back.
+
+    JSON can carry an unpaired surrogate such as "\\ud800", and echoing it would
+    fail with a 500.
+    """
+    try:
+        return await request_validation_exception_handler(request, exc)
+    except UnicodeEncodeError:
+        return JSONResponse({"detail": "text must be valid Unicode"}, status_code=422)
 
 
 def _persist(loaded: LoadResult) -> None:
